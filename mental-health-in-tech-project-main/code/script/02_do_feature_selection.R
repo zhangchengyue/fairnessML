@@ -1,4 +1,4 @@
-setwd("D:/MScAC信息/Ji Lab/fairnessML/fairnessML/mental-health-in-tech-project-main")
+setwd("D:/MScAC信息/Ji Lab/fairnessML/mental-health-in-tech-project-main")
 #loading libraries
 library(stats)
 library(tidyverse)
