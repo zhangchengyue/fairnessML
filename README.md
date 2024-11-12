@@ -5,7 +5,7 @@ Codes for fairness ML in mental health project.
 ### 2024.Nov.10
 #### Progress:
 * Following [this github repo](https://github.com/emiburns/mental-health-in-tech-project) and performed random forest on OSMI2016 dataset with the predictor variable `Do you think that discussing a mental health disorder with your employer would have negative consequences`, renamed as the `mh_discussion_negative` column in the dataset.
-** There are three categories for this variable value: Yes, No, Maybe
+  * There are three categories for this variable value: Yes, No, Maybe
   - [x] Data Cleaning
   - [x] Feature Selection
   - [x] Caret Modeling
