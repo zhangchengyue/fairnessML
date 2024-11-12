@@ -223,4 +223,14 @@ fobject <- fairmodels::fairness_check(rf_explainer,            # explainer
 print(fobject, colorize = FALSE)
 plot(fobject)
 
+# plot density
+plot_density(fobject)
+
+# Metric scores plot
+plot(metric_scores(fobject))
+
+
+# What consists of fairness object?
+fobject$parity_loss_metric_data
+
 
