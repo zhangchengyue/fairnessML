@@ -149,6 +149,8 @@ rfMod <- train(mh_discussion_negative ~ .,
                importance = "impurity",
                tuneGrid = rfGrid)
 
+
+
 ################################################
 
 rfMod
@@ -232,5 +234,42 @@ plot(metric_scores(fobject))
 
 # What consists of fairness object?
 fobject$parity_loss_metric_data
+
+
+
+
+
+
+
+
+### Reweighting bias mitigation
+
+train_copy$mh_discussion_negative <- as.numeric(train_copy$mh_discussion_negative) - 1
+
+weights <- reweight(protected = train_copy$genderMale, y = train_copy$mh_discussion_negative)
+
+rfMod_w <- train(mh_discussion_negative ~ .,
+               data = trainSmote[, c(rf_ft_selected, "mh_discussion_negative")],
+               method = "ranger",
+               trControl = fitControl_mod,
+               na.action=na.exclude,
+               verbose = FALSE,
+               weights = weights,
+               importance = "impurity",
+               tuneGrid = rfGrid)
+
+
+# explainer
+rf_explainer_w <- DALEX::explain(rfMod_w, 
+                                 data = train_copy, 
+                                 y = y_numeric, 
+                                 label = "rf_weighted",
+                                 colorize = FALSE)
+
+fobject <- fairmodels::fairness_check(fobject, rf_explainer_w, verbose = FALSE)
+
+plot(fobject)
+
+
 
 
