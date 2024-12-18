@@ -63,7 +63,7 @@ svmGrid <-  expand.grid(C = c(.001, .01, .1, 0.5, 1.0))
 
 
 # fitting training data w/ sbf feature selection
-# TODO：SelectFeatures和FitTrainingModel在funs_do_caret_modeling.R里,但是它们运行一直不成功
+# SelectFeatures和FitTrainingModel在funs_do_caret_modeling.R里,但是它们运行一直不成功
 # trainSmote$mh_discussion_negative <- as.factor(trainSmote$mh_discussion_negative)
 # ft_selected <- SelectFeatures(svmGrid, "svmLinear", trainSmote)
 # svmMod <- FitTrainingModel(svmGrid, "svmLinear", trainSmote[,c(ft_selected, "mh_discussion_negative")])
@@ -97,6 +97,17 @@ prop_included <- rowMeans(sapply(ft_selected$variables,function(i)ft_selected$co
 selected <- ft_selected$coefnames[prop_included > 0.7]
 
 
+
+
+
+
+###################################
+#                                 #
+#             SVM                 #
+#                                 #
+###################################
+
+# ?caret::train()
 svmMod <- train(mh_discussion_negative ~ .,
                 data = trainSmote[, c(selected,
                                       "mh_discussion_negative")],
@@ -110,7 +121,7 @@ svmMod <- train(mh_discussion_negative ~ .,
 #plotting training results
 trellis.par.set(caretTheme())
 ggplot(svmMod)  
-densityplot(svmMod, pch = "|")
+densityplot(svmMod, pch = "|") # Looks like a bell shape
 
 # FitTestModel在funs_do_caret_modeling.R里
 # 注意：需要是factor
@@ -119,8 +130,204 @@ testData$mh_discussion_negative <- as.factor(testData$mh_discussion_negative)
 svm_test_results <- FitTestModel(svmMod, testData)
 svm_test_results
 
+#variable importance per model
+plot(varImp(svmMod), top=20)
 
-#linear svm classification--------------------------------------------------------------------------------
+
+library(fairmodels)
+library(DALEX)
+
+train_copy <- trainSmote
+train_copy$mh_discussion_negative <- as.character(train_copy$mh_discussion_negative)
+# 把No变成0，Yes变成1
+train_copy$mh_discussion_negative[train_copy$mh_discussion_negative == "No"] <- 0
+train_copy$mh_discussion_negative[train_copy$mh_discussion_negative == "Yes"] <- 1
+train_copy$mh_discussion_negative <- as.factor(train_copy$mh_discussion_negative)
+
+
+y_numeric <- as.numeric(train_copy$mh_discussion_negative) - 1
+y_numeric
+
+########## Fairness Check for SVM########
+
+# Build explainer
+svm_explainer <- DALEX::explain(svmMod, data = train_copy, 
+                                y = y_numeric, 
+                                label = "svm",
+                                colorize = FALSE)
+# ?DALEX::explain
+svm_explainer
+
+# fairness check
+# 查一下protected和privileged是什么东西，然后把对应的内容放进去
+# https://modeloriented.github.io/fairmodels/articles/Basic_tutorial.html
+
+# <protected>: Protected variable (also called sensitive attribute), containing privileged and unprivileged groups
+
+# <privileged>: one value of <protected>, in regard to what subgroup parity loss is calculated
+
+train_copy$genderFemale <- as.factor(train_copy$genderFemale)
+train_copy$genderMale <- as.factor(train_copy$genderMale)
+
+# Interpretation: If bars reach red field on the left it means that there is 
+# bias towards certain unprivileged subgroup. If they reach one on the right 
+# it means bias towards privileged
+svm_fobject <- fairmodels::fairness_check(svm_explainer,            # explainer
+                                          protected = train_copy$genderMale,   # protected variable as factor
+                                          privileged = 1,                      # level in protected variable, potentially more privileged
+                                          cutoff = 0.5,                        # cutoff - optional, default = 0.5
+                                          colorize = FALSE)                         
+
+print(svm_fobject, colorize = FALSE)
+plot(svm_fobject)
+
+# plot density
+plot_density(svm_fobject)
+
+# Metric scores plot
+plot(metric_scores(svm_fobject))
+
+
+# What consists of fairness object?
+svm_fobject$parity_loss_metric_data
+
+
+
+# TODO: 
+# 1. Try more bias mitigation techniques
+# 2. Think about what metrics should be used in our case (refer to the fairness tree)
+
+### Pre-processing Bias Mitigation techniques #####
+##### 1. Reweighting
+
+train_copy$mh_discussion_negative <- as.numeric(train_copy$mh_discussion_negative) - 1
+
+weights <- reweight(protected = train_copy$genderMale, y = train_copy$mh_discussion_negative)
+
+svmMod_w <- train(mh_discussion_negative ~ .,
+                  data = trainSmote[, c(selected, "mh_discussion_negative")],
+                  method = "svmLinear",
+                  trControl = fitControl_mod,
+                  na.action=na.exclude,
+                  verbose = FALSE,
+                  weights = weights,
+                  importance = "impurity",
+                  tuneGrid = svmGrid)
+
+
+# Build explainer after bias mitigation by reweighing
+svm_explainer_w <- DALEX::explain(svmMod_w, 
+                                  data = train_copy, 
+                                  y = y_numeric, 
+                                  label = "svm_weighted",
+                                  colorize = FALSE)
+
+svm_fobject <- fairmodels::fairness_check(svm_fobject, svm_explainer_w, verbose = FALSE)
+
+plot(svm_fobject)
+
+
+
+#### 2. Disparate Impact Remover (Not appropriate in our case, because all columns
+# are categorical indices, not numeric values)
+
+?disparate_impact_remover
+
+
+
+#### 3. Resampling
+# svm_explainer <- DALEX::explain(svmMod, data = train_copy, 
+#                                 y = y_numeric, 
+#                                 label = "svm",
+#                                 colorize = FALSE)
+
+# There are two ways of resampling: uniform and preferential.
+uniform_indexes      <- resample(protected = train_copy$genderMale,
+                                 y = y_numeric)
+
+
+preferential_indexes <- resample(protected = train_copy$genderMale,
+                                 y = y_numeric,
+                                 type = "preferential",
+                                 probs = svm_explainer$y_hat)
+?resample
+
+set.seed(1)
+svmMod_u <- train(mh_discussion_negative ~ .,
+                  data = trainSmote[uniform_indexes, 
+                                    c(selected, "mh_discussion_negative")],
+                  method = "svmLinear",
+                  trControl = fitControl_mod,
+                  na.action=na.exclude,
+                  verbose = FALSE,
+                  importance = "impurity",
+                  tuneGrid = svmGrid)
+
+
+# Build explainer after bias mitigation by reweighing
+svm_explainer_u <- DALEX::explain(svmMod_u, 
+                                  data = train_copy, 
+                                  y = y_numeric, 
+                                  label = "svm_uniform",
+                                  colorize = FALSE)
+
+set.seed(1)
+svmMod_p <- train(mh_discussion_negative ~ .,
+                  data = trainSmote[preferential_indexes, 
+                                    c(selected, "mh_discussion_negative")],
+                  method = "svmLinear",
+                  trControl = fitControl_mod,
+                  na.action=na.exclude,
+                  verbose = FALSE,
+                  importance = "impurity",
+                  tuneGrid = svmGrid)
+
+
+# Build explainer after bias mitigation by reweighing
+svm_explainer_p <- DALEX::explain(svmMod_p, 
+                                  data = train_copy, 
+                                  y = y_numeric, 
+                                  label = "svm_preferential",
+                                  colorize = FALSE)
+
+svm_fobject <- fairness_check(svm_fobject, svm_explainer_u, svm_explainer_p, 
+                          verbose = FALSE)
+plot(svm_fobject)
+
+
+
+
+#### Post-processing Bias Mitigation Techniques #####
+#### 1. ROC pivot
+set.seed(1)
+
+svm_explainer_r <- roc_pivot(svm_explainer,
+                             protected = train_copy$genderMale,
+                             privileged = "1")
+
+
+svm_fobject <- fairness_check(svm_fobject, svm_explainer_r, 
+                          label = "svm_roc",  # label as vector for explainers
+                          verbose = FALSE) 
+
+plot(svm_fobject)
+
+### Check Bias-Accuracy Trade-off
+?performance_and_fairness
+svm_paf <- performance_and_fairness(svm_fobject, fairness_metric = "ACC",
+                                performance_metric = "accuracy")
+svm_paf
+plot(svm_paf)
+# The y-axis denotes the loss. The goal is to minimize the loss.
+
+###################################
+#                                 #
+#          Random Forest          #
+#                                 #
+###################################
+
+###########################################
+#Random Forest classification--------------------------------------------------------------------------------
 rfGrid <-  expand.grid(mtry = c(2, 3, 4, 5),
                        splitrule = c("gini", "extratrees"),
                        min.node.size = c(1, 3, 5))
@@ -164,7 +371,7 @@ densityplot(rfMod, pch = "|")
 rf_test_results <- FitTestModel(rfMod, testData)
 rf_test_results
 
-
+################################################
 #variable importance per model
 plot(varImp(svmMod), top=20)
 plot(varImp(rfMod), top=20)
@@ -185,29 +392,18 @@ trellis.par.set(caretTheme())
 bwplot(difValues, layout = c(3, 1))
 
 
-########## Fairness Check ########
-library(fairmodels)
-library(DALEX)
-
-train_copy <- trainSmote
-train_copy$mh_discussion_negative <- as.character(train_copy$mh_discussion_negative)
-# 把No变成0，Yes变成1，这样就是一个二分类问题
-train_copy$mh_discussion_negative[train_copy$mh_discussion_negative == "No"] <- 0
-train_copy$mh_discussion_negative[train_copy$mh_discussion_negative == "Yes"] <- 1
-train_copy$mh_discussion_negative <- as.factor(train_copy$mh_discussion_negative)
-
-y_numeric <- as.numeric(train_copy$mh_discussion_negative) - 1
-y_numeric
+########## Fairness Check for Random Forest########
 
 # explainer
 rf_explainer <- DALEX::explain(rfMod, data = train_copy, 
                                y = y_numeric, 
+                               label = "rf",
                                colorize = FALSE)
 # ?DALEX::explain
 rf_explainer
 
 # fairness check
-# TODO: 查一下protected和privileged是什么东西，然后把对应的内容放进去
+# 查一下protected和privileged是什么东西，然后把对应的内容放进去
 # https://modeloriented.github.io/fairmodels/articles/Basic_tutorial.html
 
 train_copy$genderFemale <- as.factor(train_copy$genderFemale)
@@ -216,37 +412,33 @@ train_copy$genderMale <- as.factor(train_copy$genderMale)
 # Interpretation: If bars reach red field on the left it means that there is 
 # bias towards certain unprivileged subgroup. If they reach one on the right 
 # it means bias towards privileged
-fobject <- fairmodels::fairness_check(rf_explainer,            # explainer
+rf_fobject <- fairmodels::fairness_check(rf_explainer,            # explainer
                           protected = train_copy$genderMale,   # protected variable as factor
                           privileged = 1,                      # level in protected variable, potentially more privileged
                           cutoff = 0.5,                        # cutoff - optional, default = 0.5
                           colorize = FALSE)                         
 
-print(fobject, colorize = FALSE)
-plot(fobject)
+print(rf_fobject, colorize = FALSE)
+plot(rf_fobject)
 
 # plot density
-plot_density(fobject)
+plot_density(rf_fobject)
 
 # Metric scores plot
-plot(metric_scores(fobject))
+plot(metric_scores(rf_fobject))
 
 
 # What consists of fairness object?
-fobject$parity_loss_metric_data
+rf_fobject$parity_loss_metric_data
 
 
+###### Pre-processing Bias Mitigation
+### 1. Reweighting
 
-
-
-
-
-
-### Reweighting bias mitigation
-
-train_copy$mh_discussion_negative <- as.numeric(train_copy$mh_discussion_negative) - 1
-
-weights <- reweight(protected = train_copy$genderMale, y = train_copy$mh_discussion_negative)
+## Already reweighted above.
+# train_copy$mh_discussion_negative <- as.numeric(train_copy$mh_discussion_negative) - 1
+# 
+# weights <- reweight(protected = train_copy$genderMale, y = train_copy$mh_discussion_negative)
 
 rfMod_w <- train(mh_discussion_negative ~ .,
                data = trainSmote[, c(rf_ft_selected, "mh_discussion_negative")],
@@ -259,16 +451,118 @@ rfMod_w <- train(mh_discussion_negative ~ .,
                tuneGrid = rfGrid)
 
 
-# explainer
+# explainer after bias mitigation by reweighing
 rf_explainer_w <- DALEX::explain(rfMod_w, 
                                  data = train_copy, 
                                  y = y_numeric, 
                                  label = "rf_weighted",
                                  colorize = FALSE)
 
-fobject <- fairmodels::fairness_check(fobject, rf_explainer_w, verbose = FALSE)
+rf_fobject <- fairmodels::fairness_check(rf_fobject, rf_explainer_w, verbose = FALSE)
 
-plot(fobject)
+plot(rf_fobject)
+
+#### 2. Disparate Impact Remover (Not appropriate in our case, because all columns
+# are categorical indices, not numeric values)
+
+
+
+#### 3. Resampling
+
+# There are two ways of resampling: uniform and preferential.
+uniform_indexes      <- resample(protected = train_copy$genderMale,
+                                 y = y_numeric)
+
+
+preferential_indexes <- resample(protected = train_copy$genderMale,
+                                 y = y_numeric,
+                                 type = "preferential",
+                                 probs = rf_explainer$y_hat)
+
+set.seed(1)
+rfMod_u <- train(mh_discussion_negative ~ .,
+                  data = trainSmote[uniform_indexes, 
+                                    c(selected, "mh_discussion_negative")],
+                  method = "ranger",
+                  trControl = fitControl_mod,
+                  na.action=na.exclude,
+                  verbose = FALSE,
+                  importance = "impurity",
+                  tuneGrid = rfGrid)
+
+
+# Build explainer after bias mitigation by reweighing
+rf_explainer_u <- DALEX::explain(rfMod_u, 
+                                  data = train_copy, 
+                                  y = y_numeric, 
+                                  label = "rf_uniform",
+                                  colorize = FALSE)
+
+set.seed(1)
+rfMod_p <- train(mh_discussion_negative ~ .,
+                  data = trainSmote[preferential_indexes, 
+                                    c(selected, "mh_discussion_negative")],
+                  method = "ranger",
+                  trControl = fitControl_mod,
+                  na.action=na.exclude,
+                  verbose = FALSE,
+                  importance = "impurity",
+                  tuneGrid = rfGrid)
+
+
+# Build explainer after bias mitigation by reweighing
+rf_explainer_p <- DALEX::explain(rfMod_p, 
+                                  data = train_copy, 
+                                  y = y_numeric, 
+                                  label = "rf_preferential",
+                                  colorize = FALSE)
+
+rf_fobject <- fairness_check(rf_fobject, rf_explainer_u, rf_explainer_p, 
+                              verbose = FALSE)
+plot(rf_fobject)
+
+
+
+
+#### Post-processing Bias Mitigation Techniques #####
+#### 1. ROC pivot
+set.seed(1)
+
+rf_explainer_r <- roc_pivot(rf_explainer,
+                             protected = train_copy$genderMale,
+                             privileged = "1")
+
+
+rf_fobject <- fairness_check(rf_fobject, rf_explainer_r, 
+                              label = "rf_roc",  # label as vector for explainers
+                              verbose = FALSE) 
+
+plot(rf_fobject)
+
+### Check Bias-Accuracy Trade-off
+?performance_and_fairness
+rf_paf <- performance_and_fairness(rf_fobject, fairness_metric = "ACC",
+                                    performance_metric = "accuracy")
+rf_paf
+plot(rf_paf)
+# The y-axis denotes the loss. The goal is to minimize the loss.
+
+fc <- fairness_check(svm_fobject, rf_fobject, verbose = FALSE)
+plot(fc)
+paf <- performance_and_fairness(fc, fairness_metric = "ACC", performance_metric = "accuracy")
+plot(paf)
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
