@@ -96,9 +96,7 @@ ft_selected <- sbf(form = mh_discussion_negative ~ .,
 prop_included <- rowMeans(sapply(ft_selected$variables,function(i)ft_selected$coefnames %in% i))
 selected <- ft_selected$coefnames[prop_included > 0.7]
 
-
-
-
+###### End of Dataset Preprocessing #######
 
 
 ###################################
@@ -177,7 +175,7 @@ svm_fobject <- fairmodels::fairness_check(svm_explainer,            # explainer
                                           privileged = 1,                      # level in protected variable, potentially more privileged
                                           cutoff = 0.5,                        # cutoff - optional, default = 0.5
                                           colorize = FALSE)                         
-
+?fairmodels::fairness_check
 print(svm_fobject, colorize = FALSE)
 plot(svm_fobject)
 
@@ -264,7 +262,7 @@ svmMod_u <- train(mh_discussion_negative ~ .,
                   tuneGrid = svmGrid)
 
 
-# Build explainer after bias mitigation by reweighing
+# Build explainer after bias mitigation by resampling
 svm_explainer_u <- DALEX::explain(svmMod_u, 
                                   data = train_copy, 
                                   y = y_numeric, 
@@ -283,7 +281,7 @@ svmMod_p <- train(mh_discussion_negative ~ .,
                   tuneGrid = svmGrid)
 
 
-# Build explainer after bias mitigation by reweighing
+# Build explainer after bias mitigation by resampling
 svm_explainer_p <- DALEX::explain(svmMod_p, 
                                   data = train_copy, 
                                   y = y_numeric, 
@@ -311,6 +309,7 @@ svm_fobject <- fairness_check(svm_fobject, svm_explainer_r,
                           verbose = FALSE) 
 
 plot(svm_fobject)
+?fairmodels::roc_pivot
 
 ### Check Bias-Accuracy Trade-off
 ?performance_and_fairness
